@@ -1,6 +1,7 @@
 streamlit
 google-generativeai
-audiorecorder
+streamlit-audiorecorder
 SpeechRecognition
 gTTS
+
 pydub
