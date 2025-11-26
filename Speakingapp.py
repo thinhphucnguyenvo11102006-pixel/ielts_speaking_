@@ -9,30 +9,33 @@ from pydub import AudioSegment
 import shutil
 import os
 
-# --- 1. CẤU HÌNH API KEY (TỰ ĐỘNG) ---
-# Logic: Nếu chạy trên Cloud thì lấy từ Secrets. Nếu chạy Local thì lấy key cứng.
+# --- 1. CẤU HÌNH API KEY (AN TOÀN TUYỆT ĐỐI) ---
+# Code này tự động lấy Key từ secrets.toml (Local) hoặc Secrets (Cloud)
+# Tuyệt đối KHÔNG viết Key cứng vào đây nữa.
 try:
-    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
-except:
-    # Thay Key của bạn vào dòng dưới (dùng khi chạy trên máy tính)
-    GOOGLE_API_KEY = "AIzaSyDxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    if "GOOGLE_API_KEY" in st.secrets:
+        api_key = st.secrets["GOOGLE_API_KEY"]
+        genai.configure(api_key=api_key)
+    else:
+        st.error("🚨 Chưa tìm thấy API Key! Hãy tạo file .streamlit/secrets.toml")
+        st.stop()
+except Exception as e:
+    st.error(f"Lỗi cấu hình Key: {e}")
+    st.stop()
 
-genai.configure(api_key=GOOGLE_API_KEY)
-
-# Dùng bản 2.5 Flash để ổn định nhất trên Cloud hiện tại
+# Dùng bản 1.5 Flash để ổn định nhất trên Cloud (Bản 2.5 đôi khi chưa public rộng rãi)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- 2. CẤU HÌNH FFMPEG ---
-# Tự động tìm FFmpeg trong hệ thống (cho Cloud Linux và Local Windows)
 if shutil.which("ffmpeg"):
     AudioSegment.converter = shutil.which("ffmpeg")
 else:
-    # Fallback: Tìm file exe cùng thư mục (cho Windows nếu chưa cài vào Path)
+    # Fallback cho Windows Local
     AudioSegment.converter = "ffmpeg.exe" 
     AudioSegment.ffmpeg = "ffmpeg.exe"
     AudioSegment.ffprobe = "ffprobe.exe"
 
-# --- 3. KHỞI TẠO SESSION STATE ---
+# --- 3. KHỞI TẠO STATE ---
 if "recorder_key" not in st.session_state:
     st.session_state.recorder_key = "0"
 
@@ -40,15 +43,13 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 # --- 4. CÁC HÀM XỬ LÝ ---
-
 def text_to_speech(text):
-    """Chuyển văn bản thành giọng nói (Anh-Anh) và tự động phát"""
+    """Chuyển văn bản thành giọng nói (Anh-Anh)"""
     try:
         tts = gTTS(text=text, lang='en', tld='co.uk') 
         audio_bytes = BytesIO()
         tts.write_to_fp(audio_bytes)
         audio_bytes.seek(0)
-        
         audio_base64 = base64.b64encode(audio_bytes.read()).decode()
         audio_html = f"""
             <audio autoplay="true" style="display:none;">
@@ -63,11 +64,9 @@ def speech_to_text(audio_segment):
     """Chuyển AudioSegment thành văn bản"""
     r = sr.Recognizer()
     try:
-        # Chuyển sang WAV (RAM)
         wav_io = BytesIO()
         audio_segment.export(wav_io, format="wav") 
         wav_io.seek(0) 
-            
         with sr.AudioFile(wav_io) as source:
             r.adjust_for_ambient_noise(source)
             audio_data = r.record(source)
@@ -102,16 +101,18 @@ IMPORTANT:
 # Khởi tạo Chat
 if "chat" not in st.session_state:
     st.session_state.chat = model.start_chat(history=[])
-    first_resp = st.session_state.chat.send_message(system_instruction)
-    initial_text = first_resp.text
-    
-    if "|||" in initial_text:
-        _, q = initial_text.split("|||")
-        st.session_state.chat_history.append({"role": "assistant", "content": q.strip()})
-        st.session_state.initial_audio = q.strip()
-    else:
-        st.session_state.chat_history.append({"role": "assistant", "content": initial_text})
-        st.session_state.initial_audio = initial_text
+    try:
+        first_resp = st.session_state.chat.send_message(system_instruction)
+        initial_text = first_resp.text
+        if "|||" in initial_text:
+            _, q = initial_text.split("|||")
+            st.session_state.chat_history.append({"role": "assistant", "content": q.strip()})
+            st.session_state.initial_audio = q.strip()
+        else:
+            st.session_state.chat_history.append({"role": "assistant", "content": initial_text})
+            st.session_state.initial_audio = initial_text
+    except Exception as e:
+        st.error(f"Lỗi khởi tạo AI: {e}. Vui lòng kiểm tra API Key hoặc Model.")
 
 # --- 6. GIAO DIỆN ---
 st.set_page_config(page_title="IELTS Examiner", page_icon="🇬🇧")
@@ -134,7 +135,7 @@ if "initial_audio" in st.session_state:
 
 st.write("---")
 
-# NÚT GHI ÂM (RESET KEY)
+# NÚT GHI ÂM
 audio = audiorecorder("Nhấn để trả lời", "Đang ghi âm...", key=st.session_state.recorder_key)
 
 if len(audio) > 0:
@@ -150,9 +151,8 @@ if len(audio) > 0:
                 response = st.session_state.chat.send_message(user_text)
                 full_reply = response.text
                 
-                # 3. TÁCH PHẦN SỬA LỖI VÀ CÂU HỎI
+                # 3. Tách phản hồi
                 voice_content = full_reply
-                
                 if "|||" in full_reply:
                     feedback_part, question_part = full_reply.split("|||")
                     st.session_state.chat_history.append({"role": "assistant", "content": f"[Feedback] {feedback_part.strip()}"})
@@ -161,13 +161,13 @@ if len(audio) > 0:
                 else:
                     st.session_state.chat_history.append({"role": "assistant", "content": full_reply})
                 
-                # 4. ĐỌC TO
+                # 4. Đọc to
                 text_to_speech(voice_content)
                 
             except Exception as e:
-                st.error(f"Lỗi AI: {e}")
+                st.error(f"Lỗi AI trả lời: {e}")
 
-        # 5. RESET NÚT
+        # 5. Reset nút
         st.session_state.recorder_key = str(int(st.session_state.recorder_key) + 1)
         st.rerun()
     else:
