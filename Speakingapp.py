@@ -6,34 +6,44 @@ from gtts import gTTS
 from io import BytesIO
 import base64
 from pydub import AudioSegment
+import shutil
+import os
 
-# --- 1. CẤU HÌNH ---
+# --- 1. CẤU HÌNH API KEY (TỰ ĐỘNG) ---
+# Logic: Nếu chạy trên Cloud thì lấy từ Secrets. Nếu chạy Local thì lấy key cứng.
+try:
+    GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+except:
+    # Thay Key của bạn vào dòng dưới (dùng khi chạy trên máy tính)
+    GOOGLE_API_KEY = "AIzaSyDxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
-# API Key của bạn
-GOOGLE_API_KEY = "AIzaSyDVUwkQnX93ReVVfAmCwnnsQorZrh09aI0"
 genai.configure(api_key=GOOGLE_API_KEY)
+
+# Dùng bản 2.5 Flash để ổn định nhất trên Cloud hiện tại
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# CẤU HÌNH FFMPEG (Quan trọng để không bị lỗi WinError 2)
-# Đảm bảo 3 file .exe nằm ngay cạnh file code này
-AudioSegment.converter = "ffmpeg.exe"
-AudioSegment.ffmpeg = "ffmpeg.exe"
-AudioSegment.ffprobe = "ffprobe.exe"
+# --- 2. CẤU HÌNH FFMPEG ---
+# Tự động tìm FFmpeg trong hệ thống (cho Cloud Linux và Local Windows)
+if shutil.which("ffmpeg"):
+    AudioSegment.converter = shutil.which("ffmpeg")
+else:
+    # Fallback: Tìm file exe cùng thư mục (cho Windows nếu chưa cài vào Path)
+    AudioSegment.converter = "ffmpeg.exe" 
+    AudioSegment.ffmpeg = "ffmpeg.exe"
+    AudioSegment.ffprobe = "ffprobe.exe"
 
-# --- 2. KHỞI TẠO SESSION STATE ---
-# Tạo bộ đếm để reset nút ghi âm sau mỗi lần nói
+# --- 3. KHỞI TẠO SESSION STATE ---
 if "recorder_key" not in st.session_state:
     st.session_state.recorder_key = "0"
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# --- 3. HÀM XỬ LÝ ---
+# --- 4. CÁC HÀM XỬ LÝ ---
 
 def text_to_speech(text):
     """Chuyển văn bản thành giọng nói (Anh-Anh) và tự động phát"""
     try:
-        # tld='co.uk' -> Giọng Anh (British English)
         tts = gTTS(text=text, lang='en', tld='co.uk') 
         audio_bytes = BytesIO()
         tts.write_to_fp(audio_bytes)
@@ -50,7 +60,7 @@ def text_to_speech(text):
         st.error(f"Lỗi TTS: {e}")
 
 def speech_to_text(audio_segment):
-    """Chuyển AudioSegment thành văn bản thông qua Google"""
+    """Chuyển AudioSegment thành văn bản"""
     r = sr.Recognizer()
     try:
         # Chuyển sang WAV (RAM)
@@ -69,8 +79,7 @@ def speech_to_text(audio_segment):
         st.error(f"Lỗi STT: {e}")
         return None
 
-# --- 4. KỊCH BẢN AI (SYSTEM PROMPT) ---
-# Logic tách luồng: Sửa lỗi ||| Câu hỏi mới
+# --- 5. KỊCH BẢN AI ---
 system_instruction = """
 You are a strict IELTS Speaking Examiner. 
 Your GOAL: Test the user's speaking ability naturally.
@@ -90,23 +99,21 @@ IMPORTANT:
 - Start with a Part 1 question about Work, Study, or Hobbies.
 """
 
-# Khởi tạo Chat Session
+# Khởi tạo Chat
 if "chat" not in st.session_state:
     st.session_state.chat = model.start_chat(history=[])
-    # Gửi chỉ thị đầu tiên
     first_resp = st.session_state.chat.send_message(system_instruction)
-    # Xử lý câu chào đầu tiên (thường AI sẽ đưa ra câu hỏi luôn)
     initial_text = first_resp.text
+    
     if "|||" in initial_text:
         _, q = initial_text.split("|||")
         st.session_state.chat_history.append({"role": "assistant", "content": q.strip()})
-        # Lưu vào biến tạm để lát nữa tự động đọc khi load trang
         st.session_state.initial_audio = q.strip()
     else:
         st.session_state.chat_history.append({"role": "assistant", "content": initial_text})
         st.session_state.initial_audio = initial_text
 
-# --- 5. GIAO DIỆN ---
+# --- 6. GIAO DIỆN ---
 st.set_page_config(page_title="IELTS Examiner", page_icon="🇬🇧")
 st.title("🇬🇧 IELTS Speaking Virtual Examiner")
 st.caption("Nghe câu hỏi -> Bấm ghi âm để trả lời -> Nhận sửa lỗi")
@@ -114,22 +121,20 @@ st.caption("Nghe câu hỏi -> Bấm ghi âm để trả lời -> Nhận sửa l
 # Hiển thị lịch sử
 for msg in st.session_state.chat_history:
     role = "🧑‍💻 Bạn" if msg["role"] == "user" else "👨‍🏫 Giám khảo"
-    # Nếu là feedback (bắt đầu bằng [Correction...]) thì bôi vàng
     if role == "👨‍🏫 Giám khảo" and "[Feedback]" in msg["content"]:
          st.warning(msg["content"])
     else:
          with st.chat_message(msg["role"]):
             st.write(msg["content"])
 
-# Xử lý âm thanh chào mừng (chỉ chạy 1 lần đầu)
+# Phát âm thanh chào mừng
 if "initial_audio" in st.session_state:
     text_to_speech(st.session_state.initial_audio)
     del st.session_state.initial_audio
 
 st.write("---")
 
-# --- 6. NÚT GHI ÂM (RESET KEY) ---
-# Quan trọng: key=... giúp reset nút sau mỗi lần dùng
+# NÚT GHI ÂM (RESET KEY)
 audio = audiorecorder("Nhấn để trả lời", "Đang ghi âm...", key=st.session_state.recorder_key)
 
 if len(audio) > 0:
@@ -137,38 +142,33 @@ if len(audio) > 0:
     user_text = speech_to_text(audio)
     
     if user_text:
-        # Lưu lời thoại user
         st.session_state.chat_history.append({"role": "user", "content": user_text})
         
         # 2. Gửi cho AI
         with st.spinner("Giám khảo đang chấm điểm..."):
-            response = st.session_state.chat.send_message(user_text)
-            full_reply = response.text
-            
-        # 3. TÁCH PHẦN SỬA LỖI VÀ CÂU HỎI
-        voice_content = full_reply # Mặc định là đọc hết
-        
-        if "|||" in full_reply:
-            feedback_part, question_part = full_reply.split("|||")
-            
-            # Lưu phần Feedback (chỉ hiện chữ)
-            st.session_state.chat_history.append({"role": "assistant", "content": f"[Feedback] {feedback_part.strip()}"})
-            
-            # Lưu phần Câu hỏi (để hiện và đọc)
-            voice_content = question_part.strip()
-            st.session_state.chat_history.append({"role": "assistant", "content": voice_content})
-            
-        else:
-            # Không có lỗi
-            st.session_state.chat_history.append({"role": "assistant", "content": full_reply})
-            
-        # 4. ĐỌC TO CÂU HỎI
-        text_to_speech(voice_content)
-        
-        # 5. RESET NÚT GHI ÂM (Tăng key lên 1)
+            try:
+                response = st.session_state.chat.send_message(user_text)
+                full_reply = response.text
+                
+                # 3. TÁCH PHẦN SỬA LỖI VÀ CÂU HỎI
+                voice_content = full_reply
+                
+                if "|||" in full_reply:
+                    feedback_part, question_part = full_reply.split("|||")
+                    st.session_state.chat_history.append({"role": "assistant", "content": f"[Feedback] {feedback_part.strip()}"})
+                    voice_content = question_part.strip()
+                    st.session_state.chat_history.append({"role": "assistant", "content": voice_content})
+                else:
+                    st.session_state.chat_history.append({"role": "assistant", "content": full_reply})
+                
+                # 4. ĐỌC TO
+                text_to_speech(voice_content)
+                
+            except Exception as e:
+                st.error(f"Lỗi AI: {e}")
+
+        # 5. RESET NÚT
         st.session_state.recorder_key = str(int(st.session_state.recorder_key) + 1)
-        
-        # 6. Rerun để cập nhật giao diện
         st.rerun()
     else:
         st.error("Không nghe rõ. Vui lòng thử lại.")
