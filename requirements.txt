@@ -1,7 +1,5 @@
 streamlit
 google-generativeai
-streamlit-audiorecorder
-SpeechRecognition
+groq
+streamlit-mic-recorder
 gTTS
-
-pydub
